@@ -2431,8 +2431,8 @@ function phylolm(f::StatsModels.FormulaTerm,
         ySD = nothing
     end
 
-    withinspecies_var && model != "BM" &&
-        error("within-species variation is not implemented for non-BM models")
+    withinspecies_var && (model != "BM" || model != "lambda") &&
+        error("within-species variation is not implemented for non-BM & non-Lambda models")
     modeldic = Dict("BM" => BM(),
                     "lambda" => PagelLambda(),
                     "scalingHybrid" => ScalingHybrid())
@@ -2815,13 +2815,13 @@ end
 #  within-species variation (including measurement error)
 ###############################################################################
 
-function phylolm_wsp(::BM, X::Matrix, Y::Vector, net::HybridNetwork, reml::Bool;
+function phylolm_wsp(m::Union{BM, PagelLambda}, X::Matrix, Y::Vector, net::HybridNetwork, reml::Bool;
         nonmissing=trues(length(Y))::BitArray{1}, # which individuals have non-missing data?
         ind=[0]::Vector{Int},
         counts::Union{Nothing, Vector}=nothing,
         ySD::Union{Nothing, Vector}=nothing)
     V = sharedPathMatrix(net)
-    phylolm_wsp(X,Y,V, reml, nonmissing,ind, counts,ySD)
+    phylolm_wsp(m,X,Y,V, reml, nonmissing,ind, counts,ySD)
 end
 
 #= notes about missing data: after X and Y produced by stat formula:
@@ -2838,7 +2838,7 @@ extra problems:
 - a species may be listed 1+ times in ind, but not in ind[nonmissing]
 - ind and nonmissing need to be converted to the species level, alongside Y
 =#
-function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
+function phylolm_wsp(m::Union{BM, PagelLambda}, X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
         reml::Bool, nonmissing::BitArray{1}, ind::Vector{Int},
         counts::Union{Nothing, Vector},
         ySD::Union{Nothing, Vector})
@@ -2887,7 +2887,7 @@ function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
     η = model_within.optsum.final[1]
     Vm = Vsp + η * Diagonal(d_inv)
     m = PhyloNetworkLinearModel(lm(RL\Xsp, RL\Ysp), V, Vm, RL, Ysp, Xsp,
-            2*logdet(RL), reml, ind, nonmissing, BM(), model_within)
+            2*logdet(RL), reml, ind, nonmissing, m, model_within)
     return m
 end
 
