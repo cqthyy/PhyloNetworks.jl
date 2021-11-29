@@ -2432,7 +2432,7 @@ function phylolm(f::StatsModels.FormulaTerm,
     end
 
     withinspecies_var && (model != "BM" || model != "lambda") &&
-        error("within-species variation is not implemented for non-BM & non-Lambda models")
+        error("within-species variation is not implemented for non-BM models, nor for Lambda implemented with BM models")
     modeldic = Dict("BM" => BM(),
                     "lambda" => PagelLambda(),
                     "scalingHybrid" => ScalingHybrid())
