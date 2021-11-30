@@ -1726,7 +1726,7 @@ function phylolm(X::Matrix, Y::Vector, net::HybridNetwork,
                 ySD::Union{Nothing, Vector}=nothing)
     if withinspecies_var
         phylolm_wsp(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
-                    counts=counts, ySD=ySD)
+                    counts=counts, ySD=ySD, fixedValue=fixedValue)
     else
         phylolm(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
                 startingValue=startingValue, fixedValue=fixedValue)
@@ -2815,13 +2815,26 @@ end
 #  within-species variation (including measurement error)
 ###############################################################################
 
-function phylolm_wsp(m::Union{BM, PagelLambda}, X::Matrix, Y::Vector, net::HybridNetwork, reml::Bool;
+function phylolm_wsp(::BM, X::Matrix, Y::Vector, net::HybridNetwork, reml::Bool;
         nonmissing=trues(length(Y))::BitArray{1}, # which individuals have non-missing data?
         ind=[0]::Vector{Int},
         counts::Union{Nothing, Vector}=nothing,
         ySD::Union{Nothing, Vector}=nothing)
     V = sharedPathMatrix(net)
-    phylolm_wsp(m,X,Y,V, reml, nonmissing,ind, counts,ySD)
+    phylolm_wsp(X,Y,V, reml, nonmissing,ind, counts,ySD)
+end
+
+function phylolm_wsp(::PagelLambda, X::Matrix, Y::Vector, net::HybridNetwork, reml::Bool;
+        nonmissing=trues(length(Y))::BitArray{1}, # which individuals have non-missing data?
+        ind=[0]::Vector{Int},
+        counts::Union{Nothing, Vector}=nothing,
+        ySD::Union{Nothing, Vector}=nothing,
+        fixedValue=missing::Union{Real,Missing})
+    if !ismissing(fixedValue) && (fixedValue <= 1 && fixedValue >= 1):
+        V = sharedPathMatrix(net)
+        transform_matrix_lambda!(V, fixedValue, gammas, times)
+        phylolm_wsp(X,Y,V, reml, nonmissing,ind, counts,ySD)
+    end
 end
 
 #= notes about missing data: after X and Y produced by stat formula:
@@ -2838,7 +2851,7 @@ extra problems:
 - a species may be listed 1+ times in ind, but not in ind[nonmissing]
 - ind and nonmissing need to be converted to the species level, alongside Y
 =#
-function phylolm_wsp(m::Union{BM, PagelLambda}, X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
+function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
         reml::Bool, nonmissing::BitArray{1}, ind::Vector{Int},
         counts::Union{Nothing, Vector},
         ySD::Union{Nothing, Vector})
@@ -2887,7 +2900,7 @@ function phylolm_wsp(m::Union{BM, PagelLambda}, X::Matrix, Y::Vector, V::MatrixT
     η = model_within.optsum.final[1]
     Vm = Vsp + η * Diagonal(d_inv)
     m = PhyloNetworkLinearModel(lm(RL\Xsp, RL\Ysp), V, Vm, RL, Ysp, Xsp,
-            2*logdet(RL), reml, ind, nonmissing, m, model_within)
+            2*logdet(RL), reml, ind, nonmissing, BM(), model_within)
     return m
 end
 
