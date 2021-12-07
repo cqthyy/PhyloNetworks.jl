@@ -1725,8 +1725,13 @@ function phylolm(X::Matrix, Y::Vector, net::HybridNetwork,
                 counts::Union{Nothing, Vector}=nothing,
                 ySD::Union{Nothing, Vector}=nothing)
     if withinspecies_var
-        phylolm_wsp(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
-                    counts=counts, ySD=ySD, fixedValue=fixedValue)
+        if model == BM()
+            phylolm_wsp(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
+                    counts=counts, ySD=ySD)
+        elseif typeof(model) == PhyloNetworks.PagelLambda
+            phylolm_wsp(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
+                        counts=counts, ySD=ySD, fixedValue=fixedValue)
+        end
     else
         phylolm(model, X,Y,net, reml; nonmissing=nonmissing, ind=ind,
                 startingValue=startingValue, fixedValue=fixedValue)
@@ -2431,14 +2436,14 @@ function phylolm(f::StatsModels.FormulaTerm,
         ySD = nothing
     end
 
-    withinspecies_var && (model != "BM" || model != "lambda") &&
+    withinspecies_var && (model != "BM" || model != "lambda") ||
         error("within-species variation is not implemented for non-BM models, nor for Lambda implemented with BM models")
     modeldic = Dict("BM" => BM(),
                     "lambda" => PagelLambda(),
                     "scalingHybrid" => ScalingHybrid())
     haskey(modeldic, model) || error("phylolm is not defined for model $model.")
     modelobj = modeldic[model]
-
+    
     StatsModels.TableRegressionModel(
         phylolm(mm.m, Y, net, modelobj; reml=reml, nonmissing=nonmissing, ind=ind,
                     startingValue=startingValue, fixedValue=fixedValue,
@@ -2830,10 +2835,12 @@ function phylolm_wsp(::PagelLambda, X::Matrix, Y::Vector, net::HybridNetwork, re
         counts::Union{Nothing, Vector}=nothing,
         ySD::Union{Nothing, Vector}=nothing,
         fixedValue=missing::Union{Real,Missing})
-    if !ismissing(fixedValue) && (fixedValue <= 1 && fixedValue >= 1):
+    if !ismissing(fixedValue) && (fixedValue <= 1 && fixedValue >= 0)
         V = sharedPathMatrix(net)
+        gammas = getGammas(net)
+        times = getHeights(net)
         transform_matrix_lambda!(V, fixedValue, gammas, times)
-        phylolm_wsp(X,Y,V, reml, nonmissing,ind, counts,ySD)
+        phylolm_wsp(X,Y,V, reml, nonmissing, ind, counts, ySD)
     end
 end
 
@@ -2894,7 +2901,6 @@ function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
         ind_nm = ind[nonmissing]
         Vsp = V[:Tips][ind_nm,ind_nm]
     end
-
     model_within, RL = withinsp_varianceratio(Xsp,Ysp,Vsp, reml, d_inv,RSS,
         n_tot,n_coef,n_sp)
     η = model_within.optsum.final[1]
