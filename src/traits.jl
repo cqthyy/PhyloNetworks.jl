@@ -2840,7 +2840,17 @@ function phylolm_wsp(::PagelLambda, X::Matrix, Y::Vector, net::HybridNetwork, re
         gammas = getGammas(net)
         times = getHeights(net)
         transform_matrix_lambda!(V, fixedValue, gammas, times)
-        phylolm_wsp(X,Y,V, reml, nonmissing, ind, counts, ySD)
+        m = phylolm_wsp(X,Y,V, reml, nonmissing, ind, counts, ySD)
+        m.model = PagelLambda(fixedValue)
+        m
+    elseif ismissing(fixedValue)
+        V = sharedPathMatrix(net)
+        gammas = getGammas(net)
+        times = getHeights(net)
+        transform_matrix_lambda!(V, fixedValue, gammas, times) # ** what to change fixedValue to here? still need this line?
+        m = phylolm_wsp(X,Y,V, reml, nonmissing, ind, counts, ySD, gammas, times)
+        #m.model = PagelLambda(fixedValue) # ** need this line still?
+        m
     end
 end
 
@@ -2971,6 +2981,124 @@ function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
     model_within.wsp_var[1] = η*σ²
     model_within.bsp_var[1] = σ²
     return model_within, Vmchol.L
+end
+
+# for the "optimize lambda" case
+function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
+        reml::Bool, nonmissing::BitArray{1}, ind::Vector{Int},
+        counts::Union{Nothing, Vector},
+        ySD::Union{Nothing, Vector},
+        gammas::Vector, times::Vector)
+    n_coef = size(X, 2) # no. of predictors
+    individualdata = isnothing(counts)
+    xor(individualdata, isnothing(ySD)) &&
+        error("counts and ySD must be both nothing, or both vectors")
+    if individualdata
+        # get species means for Y and X, the within-species residual ss
+        ind_nm = ind[nonmissing] # same length as Y
+        ind_sp = unique(ind_nm)
+        n_sp = length(ind_sp) # number of species with data
+        n_tot = length(Y)     # total number of individuals with data
+        d_inv = zeros(n_sp)
+        Ysp = Vector{Float64}(undef,n_sp) # species-level mean Y response
+        Xsp = Matrix{Float64}(undef,n_sp,n_coef)
+        RSS = 0.0  # residual sum-of-squares within-species
+        for (i0,iV) in enumerate(ind_sp)
+            iii = findall(isequal(iV), ind_nm)
+            n_i = length(iii) # number of obs for species of index iV in V
+            d_inv[i0] = 1/n_i
+            Xsp[i0, :] = mean(X[iii, :], dims=1) # ideally, all have same Xs
+            ymean = mean(Y[iii])
+            Ysp[i0] = ymean
+            RSS += sum((Y[iii] .- ymean).^2)
+        end
+        Vsp = V[:Tips][ind_sp,ind_sp]
+        # redefine "ind" and "nonmissing" at species level. ind = index of species
+        # in tipLabels(net), in same order in which species come in means Ysp.
+        # nonmissing: no need to list species with no data
+        ind = ind_sp
+        nonmissing = trues(n_sp)
+    else # group means and sds for response variable were passed in
+        n_sp = length(Y)
+        n_tot = sum(counts)
+        d_inv = 1.0 ./ counts
+        Ysp = Y
+        Xsp = X
+        RSS = sum((ySD .^ 2) .* (counts .- 1.0))
+        ind_nm = ind[nonmissing]
+        Vsp = V[:Tips][ind_nm,ind_nm]
+    end
+    model_within, RL, λ = withinsp_varianceratio(Xsp, Ysp, Vsp, reml, d_inv, RSS,
+        n_tot, n_coef, gammas, times, n_sp)
+    η = model_within.optsum.final[2]
+    Vm = Vsp + η * Diagonal(d_inv)
+    m = PhyloNetworkLinearModel(lm(RL\Xsp, RL\Ysp), V, Vm, RL, Ysp, Xsp,
+            2*logdet(RL), reml, ind, nonmissing, PagelLambda(λ), model_within)
+    return m # ** remove this?
+end
+
+# for the "optimize lambda" case
+function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
+        d_inv::Vector, RSS::Float64, ntot::Real, ncoef::Int64, nsp::Int64,
+        gammas::Vector, times::Vector,
+        model_within::Union{Nothing, WithinSpeciesCTM}=nothing,)
+
+    RL = cholesky(V).L
+    lm_sp = lm(RL\X, RL\Y)
+    if model_within === nothing
+        # create model_within with good starting values
+        s2start = GLM.dispersion(lm_sp, false) # sqr=false: deviance/dof_residual
+        # this is the REML, not ML estimate, which would be deviance/nobs
+        s2withinstart = RSS/(ntot-nsp)
+        ηstart = s2withinstart / s2start
+        λstart = 1.0
+        optsum = OptSummary([λstart, ηstart], [1e-100, 1e-100], :LN_BOBYQA; initial_step=[0.01],
+            ftol_rel=fRelTr, ftol_abs=fAbsTr, xtol_rel=xRelTr, xtol_abs=[xAbsTr])
+        optsum.maxfeval = 1000
+        model_within = WithinSpeciesCTM([s2withinstart], [s2start], d_inv, RSS, optsum)
+    else
+        optsum = model_within.optsum
+        # fixit: I find this option dangerous (and not used). what if the
+        # current optsum has 2 parameters instead of 1, or innapropriate bounds, etc.?
+        # We could remove the option to provide a pre-built model_within
+    end
+    opt = Opt(optsum)
+    Ndof = (reml ? ntot - ncoef : ntot )
+    wdof = ntot - nsp
+    Vm = similar(V) # scratch space for repeated usage
+    function logliksigma(λ, η) # returns: -2loglik, estimated sigma2, and more
+        Vp = deepcopy(V)
+        transform_matrix_lambda!(Vp, λ, gamma, times) # ** should this be gammas?
+        Vm .= V + η * Diagonal(d_inv)
+        Vmchol = cholesky(Vm) # LL' = Vm
+        RL = Vmchol.L
+        lm_sp = lm(RL\X, RL\Y)
+        σ² = (RSS/η + deviance(lm_sp))/Ndof
+        # n2ll = -2 loglik except for Ndof*log(2pi) + sum log(di) + Ndof
+        n2ll = Ndof * log(σ²) + wdof * log(η) + logdet(Vmchol)
+        if reml
+            n2ll += logdet(lm_sp.pp.chol) # log|X'Vm^{-1}X|
+        end
+        #= manual calculations without cholesky
+        Q = X'*(Vm\X);  β = Q\(X'*(Vm\Ysp));  r = Y-X*β
+        val =  Ndof*log(σ²) + ((RSS/η) + r'*(Vm\r))/σ² +
+            (ntot-ncoef)*log(η) + logabsdet(Vm)[1] + logabsdet(Q)[1]
+        =#
+        return (n2ll, σ², Vmchol)
+    end
+    obj(x, g) = logliksigma(x[1], x[2])[1] # x = [η]
+    NLopt.min_objective!(opt, obj)
+    fmin, xmin, ret = NLopt.optimize(opt, optsum.initial)
+    optsum.feval = opt.numevals
+    optsum.final = xmin
+    optsum.fmin = fmin
+    optsum.returnvalue = ret
+    # save the results
+    λ, η = xmin[1], xmin[2]
+    (n2ll, σ², Vmchol) = logliksigma(η)
+    model_within.wsp_var[1] = η*σ²
+    model_within.bsp_var[1] = σ²
+    return model_within, Vmchol.L, λ
 end
 
 ###############################################################################
