@@ -2847,9 +2847,7 @@ function phylolm_wsp(::PagelLambda, X::Matrix, Y::Vector, net::HybridNetwork, re
         V = sharedPathMatrix(net)
         gammas = getGammas(net)
         times = getHeights(net)
-        transform_matrix_lambda!(V, fixedValue, gammas, times) # ** what to change fixedValue to here? still need this line?
         m = phylolm_wsp(X,Y,V, reml, nonmissing, ind, counts, ySD, gammas, times)
-        #m.model = PagelLambda(fixedValue) # ** need this line still?
         m
     end
 end
@@ -3029,19 +3027,19 @@ function phylolm_wsp(X::Matrix, Y::Vector, V::MatrixTopologicalOrder,
         Vsp = V[:Tips][ind_nm,ind_nm]
     end
     model_within, RL, λ = withinsp_varianceratio(Xsp, Ysp, Vsp, reml, d_inv, RSS,
-        n_tot, n_coef, gammas, times, n_sp)
+        n_tot, n_coef, n_sp, gammas, times)
     η = model_within.optsum.final[2]
     Vm = Vsp + η * Diagonal(d_inv)
     m = PhyloNetworkLinearModel(lm(RL\Xsp, RL\Ysp), V, Vm, RL, Ysp, Xsp,
             2*logdet(RL), reml, ind, nonmissing, PagelLambda(λ), model_within)
-    return m # ** remove this?
+    return m
 end
 
 # for the "optimize lambda" case
 function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
         d_inv::Vector, RSS::Float64, ntot::Real, ncoef::Int64, nsp::Int64,
         gammas::Vector, times::Vector,
-        model_within::Union{Nothing, WithinSpeciesCTM}=nothing,)
+        model_within::Union{Nothing, WithinSpeciesCTM}=nothing)
 
     RL = cholesky(V).L
     lm_sp = lm(RL\X, RL\Y)
@@ -3052,8 +3050,8 @@ function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
         s2withinstart = RSS/(ntot-nsp)
         ηstart = s2withinstart / s2start
         λstart = 1.0
-        optsum = OptSummary([λstart, ηstart], [1e-100, 1e-100], :LN_BOBYQA; initial_step=[0.01],
-            ftol_rel=fRelTr, ftol_abs=fAbsTr, xtol_rel=xRelTr, xtol_abs=[xAbsTr])
+        optsum = OptSummary([λstart, ηstart], [1e-100, 1e-100], :LN_BOBYQA; initial_step=[0.01, 0.01],
+            ftol_rel=fRelTr, ftol_abs=fAbsTr, xtol_rel=xRelTr, xtol_abs=[xAbsTr, xAbsTr])
         optsum.maxfeval = 1000
         model_within = WithinSpeciesCTM([s2withinstart], [s2start], d_inv, RSS, optsum)
     else
@@ -3068,8 +3066,11 @@ function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
     Vm = similar(V) # scratch space for repeated usage
     function logliksigma(λ, η) # returns: -2loglik, estimated sigma2, and more
         Vp = deepcopy(V)
-        transform_matrix_lambda!(Vp, λ, gamma, times) # ** should this be gammas?
-        Vm .= V + η * Diagonal(d_inv)
+        
+        Vp_diag = Matrix(Diagonal(diag(Vp)))
+        Vp = λ * Vp .+ (1 - λ) .* Vp_diag
+        
+        Vm .= Vp + η * Diagonal(d_inv)
         Vmchol = cholesky(Vm) # LL' = Vm
         RL = Vmchol.L
         lm_sp = lm(RL\X, RL\Y)
@@ -3095,7 +3096,7 @@ function withinsp_varianceratio(X::Matrix, Y::Vector, V::Matrix, reml::Bool,
     optsum.returnvalue = ret
     # save the results
     λ, η = xmin[1], xmin[2]
-    (n2ll, σ², Vmchol) = logliksigma(η)
+    (n2ll, σ², Vmchol) = logliksigma(λ, η)
     model_within.wsp_var[1] = η*σ²
     model_within.bsp_var[1] = σ²
     return model_within, Vmchol.L, λ
